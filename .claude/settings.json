@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__claude-in-chrome__get_page_text",
+      "mcp__mcp-registry__search_mcp_registry",
+      "mcp__Claude_Browser__get_page_text",
+      "mcp__ec6ae9ab-b615-45f2-95d2-f97b5c16c3da__get_file_metadata",
+      "mcp__claude-in-chrome__tabs_context_mcp"
+    ]
+  }
+}

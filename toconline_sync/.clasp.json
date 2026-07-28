@@ -1,0 +1,17 @@
+{
+  "scriptId": "1ivbxd2uUe2eWG5PcDBQNSIk-Lib8_nog7bCHKWiXH-H3yOphsVSM6lCw",
+  "rootDir": "",
+  "scriptExtensions": [
+    ".js",
+    ".gs"
+  ],
+  "htmlExtensions": [
+    ".html"
+  ],
+  "jsonExtensions": [
+    ".json"
+  ],
+  "filePushOrder": [],
+  "skipSubdirectories": false,
+  "projectId": "ofa-karri"
+}
