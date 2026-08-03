@@ -39,7 +39,11 @@ function getToconlineService_() {
     .setClientId(clientId)
     .setClientSecret(secret)
     .setCallbackFunction('authCallback_')
-    .setPropertyStore(PropertiesService.getUserProperties())
+    // Script-wide store (not per-user): the 10-minute trigger and anyone
+    // clicking "Actualiser maintenant" from the menu must share the same
+    // token, otherwise only the person who ran authorize() has access and
+    // everyone else keeps hitting "not authorized yet" (2026-08-03).
+    .setPropertyStore(PropertiesService.getScriptProperties())
     .setScope('commercial')
     .setParam('response_type', 'code')
     .setTokenPayloadHandler(function (payload) {
