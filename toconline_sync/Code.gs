@@ -160,11 +160,20 @@ function fetchThisMonthInvoiceLines_(refDate) {
       if (note) observations.push(note);
     }
 
+    // A few one-off invoices should only have their FIRST product line counted
+    // toward this sheet's stock; the remaining lines were handled/fulfilled
+    // elsewhere and are not stock movements here (user-confirmed per document).
+    // See DOCUMENT_FIRST_LINE_ONLY.
+    var firstLineOnly = DOCUMENT_FIRST_LINE_ONLY[doc.document_no];
+    var countedFirstLine = false;
+
     (doc.lines || doc.commercial_sales_document_lines || []).forEach(function (line) {
       var name = line.description || line.name || '';
       var qty = Number(line.quantity || 0);
       if (!name || !qty) return;
       if (isNonProductLine_(name)) return;
+      if (firstLineOnly && countedFirstLine) return; // keep only the first product line
+      countedFirstLine = true;
       // "Tester" lines (e.g. "Tester Citrusy Joy spray 30ml") are neither
       // sold nor gifted stock - they go to their own TESTER column,
       // overriding both the SOLD and the 0-euro/GIFTED routing above.
@@ -199,6 +208,14 @@ function fetchThisMonthInvoiceLines_(refDate) {
 // entirely for every line on that document.
 var DOCUMENT_PRODUCT_OVERRIDES = {
   'FT IR2026/6': 'CITRUSY JOY 30ML' // invoice said "Hands Cleaner Citrus" but was actually Citrusy Joy
+};
+
+// Invoices where ONLY the first product line counts toward this sheet's stock;
+// every other line on the document is ignored. For one-off B2B invoices whose
+// remaining lines were fulfilled/handled elsewhere and must not decrement stock
+// here (user-confirmed per document).
+var DOCUMENT_FIRST_LINE_ONLY = {
+  'FT 2026PT/164': true // only the first line (30x Peaceful Mind) counts; rest of this invoice ignored (user-confirmed 2026-09-01)
 };
 
 // Line items that show up on Toconline invoices but aren't stock products
