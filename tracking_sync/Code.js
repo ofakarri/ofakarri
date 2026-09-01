@@ -198,6 +198,47 @@ function onOpen() {
     .addToUi();
 }
 
+// Maintenance one-shot (lançable depuis l'éditeur) : recorrige la colonne
+// « For who ? » des lignes TNT-PT existantes en relisant les emails
+// « foi marcado » avec le parseur du nom fiabilisé. Renvoie le nombre corrigé.
+function fixTntPtForWho() {
+  var sheet = SpreadsheetApp.openById(SHEET_ID).getSheetByName(TAB_NAME);
+
+  // 1) Construire une table n° de suivi -> destinataire à partir des emails TNT-PT.
+  var byTracking = {};
+  searchAllThreads_(SEARCH_WINDOW + ' subject:("foi marcado")').forEach(function (thread) {
+    thread.getMessages().forEach(function (message) {
+      var data = extractTntPt(message);
+      if (data && data.tracking) {
+        var t = String(data.tracking).trim();
+        if (data.forWho) byTracking[t] = data.forWho;
+      }
+    });
+  });
+
+  // 2) Mettre à jour la colonne For who des lignes dont le n° est retrouvé.
+  var lastRow = sheet.getLastRow();
+  if (lastRow < DATA_START_ROW) return 0;
+  var n = lastRow - DATA_START_ROW + 1;
+  var trackings = sheet.getRange(DATA_START_ROW, COL_TRACKING, n, 1).getValues();
+  var forWho = sheet.getRange(DATA_START_ROW, COL_FOR_WHO, n, 1).getValues();
+
+  var updated = 0;
+  for (var i = 0; i < n; i++) {
+    var t = String(trackings[i][0]).trim();
+    if (byTracking.hasOwnProperty(t)) {
+      var nv = byTracking[t];
+      if (nv && nv !== String(forWho[i][0]).trim()) {
+        forWho[i][0] = nv;
+        updated++;
+      }
+    }
+  }
+  sheet.getRange(DATA_START_ROW, COL_FOR_WHO, n, 1).setValues(forWho);
+  Logger.log('Destinataires TNT-PT corrigés : %s', updated);
+  return updated;
+}
+
 function refreshNow() {
   var addedCount = runTrackingSync();
   var message = addedCount > 0
