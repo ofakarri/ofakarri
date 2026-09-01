@@ -87,7 +87,7 @@ function resetToconlineAuth() {
 
 // ---------- Toconline API ----------
 
-function fetchThisMonthInvoiceLines_() {
+function fetchThisMonthInvoiceLines_(refDate) {
   var props = PropertiesService.getScriptProperties();
   var apiUrl = props.getProperty('TOCONLINE_API_URL');
   var service = getToconlineService_();
@@ -95,7 +95,9 @@ function fetchThisMonthInvoiceLines_() {
     throw new Error('Toconline is not authorized yet. Run authorize() first.');
   }
 
-  var now = new Date();
+  // refDate lets a one-off backfill recount a PAST month; when omitted it
+  // defaults to now - the live path used by the 10-minute trigger and the menu.
+  var now = refDate || new Date();
   var tz = Session.getScriptTimeZone();
   var monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
   var monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 1);
@@ -255,15 +257,28 @@ function baseProductKey_(key) {
 // ---------- Sheet update ----------
 
 function syncStock() {
+  syncStockForDate_(new Date());
+}
+
+// One-off backfill for a PAST month - e.g. to recover a month missed during an
+// auth outage. Recounts that whole month from Toconline and rewrites ONLY that
+// month's columns; the current month and every other month are untouched.
+// `month` is 1-12. Day 15 just lands safely inside the month regardless of
+// timezone. Example, from the editor: syncStockForMonth(2026, 8) // August.
+function syncStockForMonth(year, month) {
+  syncStockForDate_(new Date(year, month - 1, 15));
+}
+
+function syncStockForDate_(refDate) {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var sheet = SHEET_NAME ? ss.getSheetByName(SHEET_NAME) : ss.getSheets()[0];
   var logSheet = getOrCreateLogSheet_(ss);
 
   try {
-    var result = fetchThisMonthInvoiceLines_();
-    var soldCol = findCurrentMonthFieldColumn_(sheet, 'SOLD');
-    var giftedCol = findCurrentMonthFieldColumn_(sheet, 'GIFTED');
-    var testerCol = findCurrentMonthFieldColumn_(sheet, 'TESTER');
+    var result = fetchThisMonthInvoiceLines_(refDate);
+    var soldCol = findCurrentMonthFieldColumn_(sheet, 'SOLD', refDate);
+    var giftedCol = findCurrentMonthFieldColumn_(sheet, 'GIFTED', refDate);
+    var testerCol = findCurrentMonthFieldColumn_(sheet, 'TESTER', refDate);
     var lastRow = sheet.getLastRow();
 
     var products = sheet.getRange(FIRST_DATA_ROW, PRODUCT_COL, lastRow - FIRST_DATA_ROW + 1, 1).getValues();
@@ -370,12 +385,12 @@ function findActiveBatchRow_(candidates) {
   return withStock.length === 1 ? withStock[0] : null;
 }
 
-function findCurrentMonthFieldColumn_(sheet, fieldName) {
+function findCurrentMonthFieldColumn_(sheet, fieldName, refDate) {
   var lastCol = sheet.getLastColumn();
   var monthRow = sheet.getRange(HEADER_ROW_MONTH, 1, 1, lastCol).getValues()[0];
   var fieldRow = sheet.getRange(HEADER_ROW_FIELD, 1, 1, lastCol).getValues()[0];
 
-  var currentMonthName = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'MMMM').toUpperCase();
+  var currentMonthName = Utilities.formatDate(refDate || new Date(), Session.getScriptTimeZone(), 'MMMM').toUpperCase();
   var lastMonthSeen = '';
 
   for (var c = 0; c < lastCol; c++) {
