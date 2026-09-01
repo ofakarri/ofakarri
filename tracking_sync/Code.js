@@ -295,9 +295,15 @@ function extractTntPt(message) {
                    || body.match(/CARTA\s+DE\s+PORTE\s*[:#-]?\s*(\d{6,})/i);
   var tracking = trackingMatch ? trackingMatch[1] : null;
 
-  // Destinataire : référence client si présente, sinon vide (le n° suffit pour le Sheet).
-  var refMatch = body.match(/Refer[êe]ncia(?:\s+do\s+cliente)?\s*:?\s*\r?\n?\s*([^\r\n]+)/i);
-  var forWho = refMatch ? refMatch[1].trim() : '';
+  // « For who ? » = le DESTINATAIRE (cohérent avec les lignes FedEx et avec le
+  // rapprochement Shopify par nom). Le corps TNT-PT le donne proprement en
+  // « Nome de contacto: <nom> » ; fallbacks « Entregue a: » puis « Para: ».
+  // (L'ancienne capture sur « Referência » attrapait « do envio: #NNNN » ou la
+  // ligne « Descrição », d'où les valeurs parasites.)
+  var forWhoMatch = body.match(/Nome de contacto\s*:?\s*([^\r\n]+)/i)
+                 || body.match(/Entregue a:\s*\r?\n\s*([^\r\n]+)/i)
+                 || body.match(/Para:\s*\r?\n\s*([^\r\n]+)/i);
+  var forWho = forWhoMatch ? forWhoMatch[1].trim() : '';
 
   return tracking ? { tracking: tracking, forWho: forWho } : null;
 }
