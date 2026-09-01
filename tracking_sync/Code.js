@@ -12,16 +12,19 @@ var TAB_NAME = 'Feuille 1';
 
 var HEADER_ROW = 3;
 var DATA_START_ROW = 4;
-var COL_FOR_WHO = 2;   // B - "For who ?"
-var COL_WHEN = 3;      // C - "When ?"
-var COL_TRACKING = 4;  // D - "Tracking"
-var COL_STATUS = 5;    // E - "Delivery status"
-var COL_CARRIER = 8;   // H - "Transporteur" (ajoutée par ce script ; F/G sont déjà "Price orders"/"Price gifting")
-var COL_MONTH = 9;     // I - "Mois"
+var COL_FOR_WHO = 3;  // C - "For who ?"
+var COL_WHEN = 4;      // D - "When ?"
+var COL_TRACKING = 5;  // E - "Tracking"
+var COL_STATUS = 6;    // F - "Delivery status" (décalée pour laisser Tracking en E)
+var COL_CARRIER = 8;   // H - "Transporteur" (ajoutée par ce script)
+var COL_MONTH = 2;     // B - "Mois"
 
 var MONTHS_FR = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre'];
 
-var PROCESSED_LABEL = 'TrackingSync-Processed';
+// Le fichier ne doit contenir QUE 2026 : on borne la recherche Gmail à l'année
+// 2026. (Sinon les emails 2025 encore récents seraient ré-ajoutés après la purge,
+// puisque leur n° n'est plus dans le Sheet.) À ajuster au passage d'année.
+var SEARCH_WINDOW = 'after:2025/12/31 before:2027/01/01';
 
 var CARRIERS = [
   {
@@ -30,12 +33,25 @@ var CARRIERS = [
     extract: extractTNT
   },
   {
+    // TNT Portugal ("TNT will become FedEx") : notification d'expédition en
+    // portugais, expéditeur shipment@mail.tnt.com, sujet « O seu envio N foi
+    // marcado », n° de carta de porte (9+ chiffres). N'était couvert par aucun
+    // parseur (ni la requête FR "prise en compte", ni FedEx from:fedex.com/12ch).
+    name: 'TNT',
+    gmailQuery: 'subject:("foi marcado")',
+    extract: extractTntPt
+  },
+  {
     name: 'CTT',
     gmailQuery: 'subject:(encomenda caminho)',
     extract: extractCTT
-  }
-  // Fedex : en attente d'un exemple d'email de confirmation pour définir
-  // la requête Gmail et le parseur correspondants. À compléter ensuite.
+  },
+    {
+          name: 'FedEx',
+              gmailQuery: 'from:(fedex.com)',
+                  extract: extractFedex
+                    }
+        // FedEx : requête et parseur à vérifier avec un vrai email de confirmation.
 ];
 
 function runTrackingSync() {
@@ -43,25 +59,26 @@ function runTrackingSync() {
   ensureCarrierColumn(sheet);
   ensureMonthColumn(sheet);
 
-  var label = getOrCreateLabel(PROCESSED_LABEL);
   var existingTracking = getExistingTrackingNumbers(sheet);
   var addedCount = 0;
 
   CARRIERS.forEach(function (carrier) {
-    var query = carrier.gmailQuery + ' -label:' + PROCESSED_LABEL;
-    var threads = GmailApp.search(query, 0, 50);
+    // Anti-doublon = le NUMÉRO DE SUIVI (unique), pas un label de thread.
+    // On relit l'historique récent à chaque run : un email arrivé dans un fil
+    // déjà vu (ou dont l'extraction avait échoué une fois) n'est donc plus
+    // jamais perdu — c'est le correctif de l'ancien bug de label.
+    var query = SEARCH_WINDOW + ' ' + carrier.gmailQuery;
 
-    threads.forEach(function (thread) {
-      var messages = thread.getMessages();
-      messages.forEach(function (message) {
+    searchAllThreads_(query).forEach(function (thread) {
+      thread.getMessages().forEach(function (message) {
         var data = carrier.extract(message);
-        if (data && data.tracking && existingTracking.indexOf(data.tracking) === -1) {
-          appendTrackingRow(sheet, carrier.name, data.forWho || '', data.tracking, message.getDate());
-          existingTracking.push(data.tracking);
+        var trackingValue = data && data.tracking ? String(data.tracking).trim() : '';
+        if (trackingValue && existingTracking.indexOf(trackingValue) === -1) {
+          appendTrackingRow(sheet, carrier.name, data.forWho || '', trackingValue, message.getDate());
+          existingTracking.push(trackingValue);
           addedCount++;
         }
       });
-      thread.addLabel(label);
     });
   });
 
@@ -69,6 +86,23 @@ function runTrackingSync() {
   applyVisualStyle(sheet);
 
   return addedCount;
+}
+
+// Pagine la recherche Gmail pour ne pas être plafonné à 50 fils (indispensable
+// au rattrapage d'un backlog). Garde-fou dur pour rester sous la limite de
+// temps d'exécution d'Apps Script.
+function searchAllThreads_(query) {
+  var all = [];
+  var pageSize = 100;
+  var start = 0;
+  while (true) {
+    var page = GmailApp.search(query, start, pageSize);
+    all = all.concat(page);
+    if (page.length < pageSize) break;
+    start += pageSize;
+    if (start >= 2000) break;
+  }
+  return all;
 }
 
 // ---- Regroupement par mois (cellules fusionnées) + mise en forme ----
@@ -81,8 +115,8 @@ function reorganizeMonthGroups(sheet) {
   var monthRange = sheet.getRange(DATA_START_ROW, COL_MONTH, numRows, 1);
   monthRange.breakApart();
 
-  sheet.getRange(DATA_START_ROW, COL_FOR_WHO, numRows, COL_MONTH - COL_FOR_WHO + 1)
-    .sort({ column: COL_WHEN, ascending: true });
+    sheet.getRange(DATA_START_ROW, COL_MONTH, numRows, COL_CARRIER - COL_MONTH + 1)
+        .sort({ column: COL_WHEN, ascending: true });
 
   var dates = sheet.getRange(DATA_START_ROW, COL_WHEN, numRows, 1).getValues();
   var labels = dates.map(function (row) {
@@ -114,9 +148,9 @@ function reorganizeMonthGroups(sheet) {
 function applyVisualStyle(sheet) {
   var lastRow = Math.max(sheet.getLastRow(), DATA_START_ROW);
   var numRows = lastRow - DATA_START_ROW + 1;
-  var width = COL_MONTH - COL_FOR_WHO + 1;
+    var width = COL_CARRIER - COL_MONTH + 1;
 
-  sheet.getRange(HEADER_ROW, COL_FOR_WHO, 1, width)
+    sheet.getRange(HEADER_ROW, COL_MONTH, 1, width)
     .setBackground('#1c4587')
     .setFontColor('#ffffff')
     .setFontWeight('bold')
@@ -124,11 +158,11 @@ function applyVisualStyle(sheet) {
 
   sheet.setFrozenRows(HEADER_ROW);
 
-  var tableRange = sheet.getRange(HEADER_ROW, COL_FOR_WHO, numRows + 1, width);
+    var tableRange = sheet.getRange(HEADER_ROW, COL_MONTH, numRows + 1, width);
   tableRange.setBorder(true, true, true, true, true, true, '#cccccc', SpreadsheetApp.BorderStyle.SOLID);
 
-  // Bandes alternées sur B:C et E:H uniquement : la colonne D (Tracking) garde
-  // son propre surlignage (vert = numéro confirmé, sans fond = lien de suivi manuel).
+    // Bandes alternées sur C:D et F:H uniquement : la colonne E (Tracking) garde
+      // son propre surlignage (vert = numéro confirmé, sans fond = lien de suivi manuel).
   [
     sheet.getRange(DATA_START_ROW, COL_FOR_WHO, numRows, COL_WHEN - COL_FOR_WHO + 1),
     sheet.getRange(DATA_START_ROW, COL_STATUS, numRows, COL_CARRIER - COL_STATUS + 1)
@@ -208,14 +242,6 @@ function appendTrackingRow(sheet, carrierName, forWho, tracking, emailDate) {
   sheet.getRange(newRow, COL_MONTH).setValue(getMonthLabel(emailDate));
 }
 
-function getOrCreateLabel(name) {
-  var label = GmailApp.getUserLabelByName(name);
-  if (!label) {
-    label = GmailApp.createLabel(name);
-  }
-  return label;
-}
-
 // ---- Parseurs spécifiques à chaque transporteur ----
 
 function extractTNT(message) {
@@ -225,8 +251,9 @@ function extractTNT(message) {
   var trackingMatch = subject.match(/n[°o]\s*(\d+)/i) || body.match(/num[ée]ro d'exp[ée]dition est\s*\**\s*(\d+)/i);
   var tracking = trackingMatch ? trackingMatch[1] : null;
 
-  var forWhoMatch = body.match(/Destinataire\s*:?\s*\r?\n?\s*([^\r\n]+)/i);
-  var forWho = forWhoMatch ? forWhoMatch[1].trim() : '';
+        var refMatch = body.match(/R[ée]f[ée]rence[^:\r\n]*:\s*([^\r\n]*)/i);
+      var forWhoMatch = body.match(/Destinataire\s*:?\s*\r?\n?\s*([^\r\n]+)/i);
+        var forWho = refMatch ? refMatch[1].trim() : (forWhoMatch ? forWhoMatch[1].trim() : '');
 
   return tracking ? { tracking: tracking, forWho: forWho } : null;
 }
@@ -238,11 +265,94 @@ function extractCTT(message) {
   var trackingMatch = (subject + ' ' + body).match(/\b[A-Z]{2}\d{9}[A-Z]{2}\b/);
   var tracking = trackingMatch ? trackingMatch[0] : null;
 
-  var forWhoMatch = subject.match(/para\s+(.+?)\s+est[áa] a caminho/i) ||
+    var refMatch = body.match(/Refer[êe]ncia(?:\s+do\s+cliente)?\s*:?\s*\r?\n?\s*([^\r\n]+)/i);
+    var forWhoMatch = subject.match(/para\s+(.+?)\s+est[áa] a caminho/i) ||
                      body.match(/para\s+([^,]+?)\s+tem entrega/i);
-  var forWho = forWhoMatch ? forWhoMatch[1].trim() : '';
+    var forWho = refMatch ? refMatch[1].trim() : (forWhoMatch ? forWhoMatch[1].trim() : '');
 
   return tracking ? { tracking: tracking, forWho: forWho } : null;
+}
+
+function extractFedex(message) {
+  var subject = message.getSubject();
+    var body = message.getPlainBody();
+
+      var trackingMatch = (subject + ' ' + body).match(/\b\d{12}\b/);
+        var tracking = trackingMatch ? trackingMatch[0] : null;
+
+          var refMatch = body.match(/R[ée]f(?:[ée]rence)?\s*:?\s*\r?\n?\s*([^\r\n]+)/i);
+            var forWho = refMatch ? refMatch[1].trim() : '';
+
+              return tracking ? { tracking: tracking, forWho: forWho } : null;
+              }
+
+function extractTntPt(message) {
+  var subject = message.getSubject();
+  var body = message.getPlainBody();
+
+  // Sujet : « O seu envio 154063029 foi marcado ». Fallback corps : « CARTA DE PORTE 154063029 ».
+  var trackingMatch = subject.match(/envio\s+(\d{6,})\s+foi\s+marcado/i)
+                   || body.match(/CARTA\s+DE\s+PORTE\s*[:#-]?\s*(\d{6,})/i);
+  var tracking = trackingMatch ? trackingMatch[1] : null;
+
+  // Destinataire : référence client si présente, sinon vide (le n° suffit pour le Sheet).
+  var refMatch = body.match(/Refer[êe]ncia(?:\s+do\s+cliente)?\s*:?\s*\r?\n?\s*([^\r\n]+)/i);
+  var forWho = refMatch ? refMatch[1].trim() : '';
+
+  return tracking ? { tracking: tracking, forWho: forWho } : null;
+}
+
+// ---- Maintenance : ne garder que l'année 2026 ----
+
+// Année de l'objet Date OU d'une chaîne "dd/MM/yyyy" ; null si illisible.
+function yearOfWhen_(v) {
+  if (v instanceof Date) return v.getFullYear();
+  var m = String(v).match(/\b(20\d{2})\b/);
+  return m ? parseInt(m[1], 10) : null;
+}
+
+// APERÇU (ne supprime rien) : journalise la répartition des lignes par année.
+function previewYears() {
+  var sheet = SpreadsheetApp.openById(SHEET_ID).getSheetByName(TAB_NAME);
+  var lastRow = sheet.getLastRow();
+  if (lastRow < DATA_START_ROW) { Logger.log('Aucune ligne de données.'); return {}; }
+  var n = lastRow - DATA_START_ROW + 1;
+  var whenVals = sheet.getRange(DATA_START_ROW, COL_WHEN, n, 1).getValues();
+  var counts = {};
+  whenVals.forEach(function (r) {
+    var y = yearOfWhen_(r[0]);
+    var key = (y === null) ? 'illisible' : String(y);
+    counts[key] = (counts[key] || 0) + 1;
+  });
+  Logger.log('Répartition par année : %s', JSON.stringify(counts));
+  return counts;
+}
+
+// SUPPRIME les lignes dont l'année est un nombre valide ≠ 2026.
+// Les lignes sans date lisible sont PRÉSERVÉES. Renvoie le nombre supprimé.
+function deleteRowsNot2026() {
+  var sheet = SpreadsheetApp.openById(SHEET_ID).getSheetByName(TAB_NAME);
+  var lastRow = sheet.getLastRow();
+  if (lastRow < DATA_START_ROW) return 0;
+  var n = lastRow - DATA_START_ROW + 1;
+  var whenVals = sheet.getRange(DATA_START_ROW, COL_WHEN, n, 1).getValues();
+
+  var toDelete = [];
+  for (var i = 0; i < n; i++) {
+    var y = yearOfWhen_(whenVals[i][0]);
+    if (y !== null && y !== 2026) toDelete.push(DATA_START_ROW + i);
+  }
+
+  // Défusionner la colonne Mois avant de supprimer, sinon les fusions gênent.
+  sheet.getRange(DATA_START_ROW, COL_MONTH, n, 1).breakApart();
+  for (var j = toDelete.length - 1; j >= 0; j--) {
+    sheet.deleteRow(toDelete[j]);
+  }
+
+  reorganizeMonthGroups(sheet);
+  applyVisualStyle(sheet);
+  Logger.log('%s ligne(s) supprimée(s) (année ≠ 2026).', toDelete.length);
+  return toDelete.length;
 }
 
 // ---- Installation (à exécuter une seule fois manuellement depuis l'éditeur Apps Script) ----
