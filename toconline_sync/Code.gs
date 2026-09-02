@@ -39,7 +39,11 @@ function getToconlineService_() {
     .setClientId(clientId)
     .setClientSecret(secret)
     .setCallbackFunction('authCallback_')
-    .setPropertyStore(PropertiesService.getUserProperties())
+    // Script-wide store (not per-user): the 10-minute trigger and anyone
+    // clicking "Actualiser maintenant" from the menu must share the same
+    // token, otherwise only the person who ran authorize() has access and
+    // everyone else keeps hitting "not authorized yet" (2026-08-03).
+    .setPropertyStore(PropertiesService.getScriptProperties())
     .setScope('commercial')
     .setParam('response_type', 'code')
     .setTokenPayloadHandler(function (payload) {
@@ -81,9 +85,32 @@ function resetToconlineAuth() {
   getToconlineService_().reset();
 }
 
+// One-off diagnostic for the recurring "not authorized yet" error. Reads only -
+// changes nothing. Run it from the editor, then open Executions to read the log.
+// The key questions it answers: is a refresh_token stored (so auto-refresh is
+// even possible), and when does the current access token expire?
+function diagnoseAuth() {
+  var service = getToconlineService_();
+  var token = service.getToken();
+  if (!token) {
+    Logger.log('No token stored - authorize() has never succeeded here, or it was reset.');
+    return;
+  }
+  Logger.log('hasAccess(): %s', service.hasAccess());
+  Logger.log('refresh_token present: %s', !!token.refresh_token);
+  Logger.log('expires_in (seconds): %s', token.expires_in);
+  Logger.log('granted_time (epoch s): %s', token.granted_time);
+  if (token.granted_time && token.expires_in) {
+    var expiryMs = (Number(token.granted_time) + Number(token.expires_in)) * 1000;
+    Logger.log('access token expires at (script tz): %s',
+      Utilities.formatDate(new Date(expiryMs), Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm:ss'));
+  }
+  Logger.log('token fields returned by Toconline: %s', Object.keys(token).join(', '));
+}
+
 // ---------- Toconline API ----------
 
-function fetchThisMonthInvoiceLines_() {
+function fetchThisMonthInvoiceLines_(refDate) {
   var props = PropertiesService.getScriptProperties();
   var apiUrl = props.getProperty('TOCONLINE_API_URL');
   var service = getToconlineService_();
@@ -91,7 +118,9 @@ function fetchThisMonthInvoiceLines_() {
     throw new Error('Toconline is not authorized yet. Run authorize() first.');
   }
 
-  var now = new Date();
+  // refDate lets a one-off backfill recount a PAST month; when omitted it
+  // defaults to now - the live path used by the 10-minute trigger and the menu.
+  var now = refDate || new Date();
   var tz = Session.getScriptTimeZone();
   var monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
   var monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 1);
@@ -154,11 +183,20 @@ function fetchThisMonthInvoiceLines_() {
       if (note) observations.push(note);
     }
 
+    // A few one-off invoices should only have their FIRST product line counted
+    // toward this sheet's stock; the remaining lines were handled/fulfilled
+    // elsewhere and are not stock movements here (user-confirmed per document).
+    // See DOCUMENT_FIRST_LINE_ONLY.
+    var firstLineOnly = DOCUMENT_FIRST_LINE_ONLY[doc.document_no];
+    var countedFirstLine = false;
+
     (doc.lines || doc.commercial_sales_document_lines || []).forEach(function (line) {
       var name = line.description || line.name || '';
       var qty = Number(line.quantity || 0);
       if (!name || !qty) return;
       if (isNonProductLine_(name)) return;
+      if (firstLineOnly && countedFirstLine) return; // keep only the first product line
+      countedFirstLine = true;
       // "Tester" lines (e.g. "Tester Citrusy Joy spray 30ml") are neither
       // sold nor gifted stock - they go to their own TESTER column,
       // overriding both the SOLD and the 0-euro/GIFTED routing above.
@@ -193,6 +231,14 @@ function fetchThisMonthInvoiceLines_() {
 // entirely for every line on that document.
 var DOCUMENT_PRODUCT_OVERRIDES = {
   'FT IR2026/6': 'CITRUSY JOY 30ML' // invoice said "Hands Cleaner Citrus" but was actually Citrusy Joy
+};
+
+// Invoices where ONLY the first product line counts toward this sheet's stock;
+// every other line on the document is ignored. For one-off B2B invoices whose
+// remaining lines were fulfilled/handled elsewhere and must not decrement stock
+// here (user-confirmed per document).
+var DOCUMENT_FIRST_LINE_ONLY = {
+  'FT 2026PT/164': true // only the first line (30x Peaceful Mind) counts; rest of this invoice ignored (user-confirmed 2026-09-01)
 };
 
 // Line items that show up on Toconline invoices but aren't stock products
@@ -251,15 +297,70 @@ function baseProductKey_(key) {
 // ---------- Sheet update ----------
 
 function syncStock() {
+  try {
+    syncStockForDate_(new Date());
+    clearReauthFlag_();
+  } catch (err) {
+    // Toconline's OAuth only supports the interactive (browser) authorization_code
+    // flow - refresh_token is rejected (unauthorized_client) and client_credentials
+    // is not implemented (501), both confirmed by direct testing. So when the token
+    // expires there is nothing this 10-minute trigger can do unattended. Letting the
+    // exception propagate is exactly what made Google send a daily "unauthorized"
+    // failure email. Swallow the auth case (flagging it once/day in the Sync Log so
+    // it's visible and reconnectable in one click) and keep the noise off. Any other
+    // (real) error still surfaces normally.
+    if (isAuthError_(err)) {
+      flagReauthNeeded_();
+      return;
+    }
+    throw err;
+  }
+}
+
+function isAuthError_(err) {
+  var msg = String((err && err.message) || err || '');
+  return /not authorized yet/i.test(msg) || /API error \(401\)/i.test(msg);
+}
+
+// Records "reconnection needed" at most once per day in the Sync Log (not every
+// 10-minute run) so the status is visible without spamming the log.
+function flagReauthNeeded_() {
+  var props = PropertiesService.getScriptProperties();
+  var today = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd');
+  if (props.getProperty('REAUTH_FLAGGED_ON') === today) return;
+  props.setProperty('REAUTH_FLAGGED_ON', today);
+  var logSheet = getOrCreateLogSheet_(SpreadsheetApp.getActiveSpreadsheet());
+  logSheet.appendRow([
+    new Date(),
+    '⚠️ RECONNEXION TOCONLINE NÉCESSAIRE',
+    'Menu « Toconline Sync » ▸ « Reconnecter TocOnline » (1 clic)',
+    ''
+  ]);
+}
+
+function clearReauthFlag_() {
+  PropertiesService.getScriptProperties().deleteProperty('REAUTH_FLAGGED_ON');
+}
+
+// One-off backfill for a PAST month - e.g. to recover a month missed during an
+// auth outage. Recounts that whole month from Toconline and rewrites ONLY that
+// month's columns; the current month and every other month are untouched.
+// `month` is 1-12. Day 15 just lands safely inside the month regardless of
+// timezone. Example, from the editor: syncStockForMonth(2026, 8) // August.
+function syncStockForMonth(year, month) {
+  syncStockForDate_(new Date(year, month - 1, 15));
+}
+
+function syncStockForDate_(refDate) {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var sheet = SHEET_NAME ? ss.getSheetByName(SHEET_NAME) : ss.getSheets()[0];
   var logSheet = getOrCreateLogSheet_(ss);
 
   try {
-    var result = fetchThisMonthInvoiceLines_();
-    var soldCol = findCurrentMonthFieldColumn_(sheet, 'SOLD');
-    var giftedCol = findCurrentMonthFieldColumn_(sheet, 'GIFTED');
-    var testerCol = findCurrentMonthFieldColumn_(sheet, 'TESTER');
+    var result = fetchThisMonthInvoiceLines_(refDate);
+    var soldCol = findCurrentMonthFieldColumn_(sheet, 'SOLD', refDate);
+    var giftedCol = findCurrentMonthFieldColumn_(sheet, 'GIFTED', refDate);
+    var testerCol = findCurrentMonthFieldColumn_(sheet, 'TESTER', refDate);
     var lastRow = sheet.getLastRow();
 
     var products = sheet.getRange(FIRST_DATA_ROW, PRODUCT_COL, lastRow - FIRST_DATA_ROW + 1, 1).getValues();
@@ -306,7 +407,10 @@ function syncStock() {
       .concat(testerResult.unmatched.map(function (u) { return u + ' (TESTER)'; }));
     logRun_(logSheet, 'OK', updated, unmatched);
   } catch (err) {
-    logRun_(logSheet, 'ERROR: ' + err.message, [], []);
+    // Auth-expired is handled once/day by syncStock(); don't log it on every run.
+    if (!isAuthError_(err)) {
+      logRun_(logSheet, 'ERROR: ' + err.message, [], []);
+    }
     throw err;
   }
 }
@@ -366,12 +470,12 @@ function findActiveBatchRow_(candidates) {
   return withStock.length === 1 ? withStock[0] : null;
 }
 
-function findCurrentMonthFieldColumn_(sheet, fieldName) {
+function findCurrentMonthFieldColumn_(sheet, fieldName, refDate) {
   var lastCol = sheet.getLastColumn();
   var monthRow = sheet.getRange(HEADER_ROW_MONTH, 1, 1, lastCol).getValues()[0];
   var fieldRow = sheet.getRange(HEADER_ROW_FIELD, 1, 1, lastCol).getValues()[0];
 
-  var currentMonthName = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'MMMM').toUpperCase();
+  var currentMonthName = Utilities.formatDate(refDate || new Date(), Session.getScriptTimeZone(), 'MMMM').toUpperCase();
   var lastMonthSeen = '';
 
   for (var c = 0; c < lastCol; c++) {
@@ -413,17 +517,49 @@ function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('Toconline Sync')
     .addItem('Actualiser maintenant', 'manualSync')
+    .addItem('🔑 Reconnecter TocOnline', 'reconnectToconline')
     .addToUi();
+}
+
+// Menu action: one-click Toconline reconnection. Toconline's OAuth only supports
+// the interactive (browser) authorization_code flow - refresh_token and
+// client_credentials are both rejected by their server - so a periodic manual
+// reconnect is unavoidable. This turns it into a single click.
+function reconnectToconline() {
+  var ui = SpreadsheetApp.getUi();
+  var service = getToconlineService_();
+  if (service.hasAccess()) {
+    ui.alert('TocOnline', 'Déjà connecté ✔\nRien à faire — la synchro tourne.', ui.ButtonSet.OK);
+    return;
+  }
+  var url = service.getAuthorizationUrl();
+  var html = HtmlService.createHtmlOutput(
+    '<div style="font:14px/1.5 Arial,sans-serif;padding:4px">' +
+    '<p>Le jeton TocOnline a expiré. Clique pour reconnecter :</p>' +
+    '<p><a href="' + url + '" target="_blank" rel="noopener" ' +
+    'style="display:inline-block;padding:10px 16px;background:#1a73e8;color:#fff;' +
+    'text-decoration:none;border-radius:6px">👉 Reconnecter TocOnline</a></p>' +
+    '<p style="color:#666;font-size:12px">Une fenêtre TocOnline s\'ouvre. Si tu es ' +
+    'déjà connecté à TocOnline dans ce navigateur, elle affiche « Success! » et tu ' +
+    'peux la refermer. La synchro repart automatiquement sous 10 min.</p></div>')
+    .setWidth(460).setHeight(210);
+  ui.showModalDialog(html, 'Reconnexion TocOnline');
 }
 
 // Menu entry point: runs syncStock() on demand (same logic as the 10-minute
 // trigger) and shows the result as a toast instead of a raw error dialog.
 function manualSync() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
+  // syncStock() now swallows the auth-expired case, so check access up front to
+  // give a clear, actionable toast instead of a silent "done".
+  if (!getToconlineService_().hasAccess()) {
+    ss.toast('TocOnline déconnecté — menu « Toconline Sync » ▸ « Reconnecter TocOnline ».', 'Toconline', 8);
+    return;
+  }
   ss.toast('Synchronisation en cours...', 'Toconline', 5);
   try {
     syncStock();
-    ss.toast('Synchronisation terminee - voir l\'onglet "Sync Log" pour le detail.', 'Toconline', 6);
+    ss.toast('Synchronisation terminée — voir l\'onglet "Sync Log" pour le détail.', 'Toconline', 6);
   } catch (err) {
     ss.toast('Erreur : ' + err.message, 'Toconline', 10);
   }

@@ -42,7 +42,9 @@ These are entered directly in Google's UI — they never need to be pasted into 
 3. Deploy, copy the Web App URL it gives you.
 4. **Important, and non-obvious**: Toconline's registered redirect_uri must NOT be this `/exec` Web App URL. The OAuth2 library actually sends a different, stable callback URL of the form `https://script.google.com/macros/d/{SCRIPT_ID}/usercallback` (visible in the `authorize()` log output). Register **that** URL in Toconline's "Endereço URI de redirect" field instead — this one doesn't change across redeployments, so it only needs to be set once.
 
-## 5. Authorize Toconline (one time)
+## 5. Authorize Toconline (one time, ever — by anyone)
+
+The token is stored in Script Properties (shared by the whole project), not per-user, so this only needs to happen once total — not once per person, and not again after the trigger owner changes.
 
 1. In the Apps Script editor, select the function `authorize` (dropdown near Run) and click **Run**.
 2. Approve the Apps Script permissions prompt (it needs to read/write this spreadsheet and make external requests).
