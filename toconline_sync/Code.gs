@@ -85,6 +85,29 @@ function resetToconlineAuth() {
   getToconlineService_().reset();
 }
 
+// One-off diagnostic for the recurring "not authorized yet" error. Reads only -
+// changes nothing. Run it from the editor, then open Executions to read the log.
+// The key questions it answers: is a refresh_token stored (so auto-refresh is
+// even possible), and when does the current access token expire?
+function diagnoseAuth() {
+  var service = getToconlineService_();
+  var token = service.getToken();
+  if (!token) {
+    Logger.log('No token stored - authorize() has never succeeded here, or it was reset.');
+    return;
+  }
+  Logger.log('hasAccess(): %s', service.hasAccess());
+  Logger.log('refresh_token present: %s', !!token.refresh_token);
+  Logger.log('expires_in (seconds): %s', token.expires_in);
+  Logger.log('granted_time (epoch s): %s', token.granted_time);
+  if (token.granted_time && token.expires_in) {
+    var expiryMs = (Number(token.granted_time) + Number(token.expires_in)) * 1000;
+    Logger.log('access token expires at (script tz): %s',
+      Utilities.formatDate(new Date(expiryMs), Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm:ss'));
+  }
+  Logger.log('token fields returned by Toconline: %s', Object.keys(token).join(', '));
+}
+
 // ---------- Toconline API ----------
 
 function fetchThisMonthInvoiceLines_(refDate) {
@@ -274,7 +297,49 @@ function baseProductKey_(key) {
 // ---------- Sheet update ----------
 
 function syncStock() {
-  syncStockForDate_(new Date());
+  try {
+    syncStockForDate_(new Date());
+    clearReauthFlag_();
+  } catch (err) {
+    // Toconline's OAuth only supports the interactive (browser) authorization_code
+    // flow - refresh_token is rejected (unauthorized_client) and client_credentials
+    // is not implemented (501), both confirmed by direct testing. So when the token
+    // expires there is nothing this 10-minute trigger can do unattended. Letting the
+    // exception propagate is exactly what made Google send a daily "unauthorized"
+    // failure email. Swallow the auth case (flagging it once/day in the Sync Log so
+    // it's visible and reconnectable in one click) and keep the noise off. Any other
+    // (real) error still surfaces normally.
+    if (isAuthError_(err)) {
+      flagReauthNeeded_();
+      return;
+    }
+    throw err;
+  }
+}
+
+function isAuthError_(err) {
+  var msg = String((err && err.message) || err || '');
+  return /not authorized yet/i.test(msg) || /API error \(401\)/i.test(msg);
+}
+
+// Records "reconnection needed" at most once per day in the Sync Log (not every
+// 10-minute run) so the status is visible without spamming the log.
+function flagReauthNeeded_() {
+  var props = PropertiesService.getScriptProperties();
+  var today = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd');
+  if (props.getProperty('REAUTH_FLAGGED_ON') === today) return;
+  props.setProperty('REAUTH_FLAGGED_ON', today);
+  var logSheet = getOrCreateLogSheet_(SpreadsheetApp.getActiveSpreadsheet());
+  logSheet.appendRow([
+    new Date(),
+    '⚠️ RECONNEXION TOCONLINE NÉCESSAIRE',
+    'Menu « Toconline Sync » ▸ « Reconnecter TocOnline » (1 clic)',
+    ''
+  ]);
+}
+
+function clearReauthFlag_() {
+  PropertiesService.getScriptProperties().deleteProperty('REAUTH_FLAGGED_ON');
 }
 
 // One-off backfill for a PAST month - e.g. to recover a month missed during an
@@ -342,7 +407,10 @@ function syncStockForDate_(refDate) {
       .concat(testerResult.unmatched.map(function (u) { return u + ' (TESTER)'; }));
     logRun_(logSheet, 'OK', updated, unmatched);
   } catch (err) {
-    logRun_(logSheet, 'ERROR: ' + err.message, [], []);
+    // Auth-expired is handled once/day by syncStock(); don't log it on every run.
+    if (!isAuthError_(err)) {
+      logRun_(logSheet, 'ERROR: ' + err.message, [], []);
+    }
     throw err;
   }
 }
@@ -449,17 +517,49 @@ function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('Toconline Sync')
     .addItem('Actualiser maintenant', 'manualSync')
+    .addItem('🔑 Reconnecter TocOnline', 'reconnectToconline')
     .addToUi();
+}
+
+// Menu action: one-click Toconline reconnection. Toconline's OAuth only supports
+// the interactive (browser) authorization_code flow - refresh_token and
+// client_credentials are both rejected by their server - so a periodic manual
+// reconnect is unavoidable. This turns it into a single click.
+function reconnectToconline() {
+  var ui = SpreadsheetApp.getUi();
+  var service = getToconlineService_();
+  if (service.hasAccess()) {
+    ui.alert('TocOnline', 'Déjà connecté ✔\nRien à faire — la synchro tourne.', ui.ButtonSet.OK);
+    return;
+  }
+  var url = service.getAuthorizationUrl();
+  var html = HtmlService.createHtmlOutput(
+    '<div style="font:14px/1.5 Arial,sans-serif;padding:4px">' +
+    '<p>Le jeton TocOnline a expiré. Clique pour reconnecter :</p>' +
+    '<p><a href="' + url + '" target="_blank" rel="noopener" ' +
+    'style="display:inline-block;padding:10px 16px;background:#1a73e8;color:#fff;' +
+    'text-decoration:none;border-radius:6px">👉 Reconnecter TocOnline</a></p>' +
+    '<p style="color:#666;font-size:12px">Une fenêtre TocOnline s\'ouvre. Si tu es ' +
+    'déjà connecté à TocOnline dans ce navigateur, elle affiche « Success! » et tu ' +
+    'peux la refermer. La synchro repart automatiquement sous 10 min.</p></div>')
+    .setWidth(460).setHeight(210);
+  ui.showModalDialog(html, 'Reconnexion TocOnline');
 }
 
 // Menu entry point: runs syncStock() on demand (same logic as the 10-minute
 // trigger) and shows the result as a toast instead of a raw error dialog.
 function manualSync() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
+  // syncStock() now swallows the auth-expired case, so check access up front to
+  // give a clear, actionable toast instead of a silent "done".
+  if (!getToconlineService_().hasAccess()) {
+    ss.toast('TocOnline déconnecté — menu « Toconline Sync » ▸ « Reconnecter TocOnline ».', 'Toconline', 8);
+    return;
+  }
   ss.toast('Synchronisation en cours...', 'Toconline', 5);
   try {
     syncStock();
-    ss.toast('Synchronisation terminee - voir l\'onglet "Sync Log" pour le detail.', 'Toconline', 6);
+    ss.toast('Synchronisation terminée — voir l\'onglet "Sync Log" pour le détail.', 'Toconline', 6);
   } catch (err) {
     ss.toast('Erreur : ' + err.message, 'Toconline', 10);
   }
