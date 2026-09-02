@@ -232,12 +232,12 @@ function fixTntPtForWho() {
     if (byTracking.hasOwnProperty(t)) {
       var nv = byTracking[t];
       var cur = String(forWho[i][0]).trim();
-      if (nv) {
-        if (nv !== cur) { forWho[i][0] = nv; updated++; }
-      } else if (/^Descri|do\s+envio|COSMETIC\s+BODY/i.test(cur)) {
-        // Email TNT-PT sans référence : on efface la pollution résiduelle.
-        forWho[i][0] = '';
-        updated++;
+      var isPollution = /^Descri|do\s+envio|COSMETIC\s+BODY/i.test(cur);
+      // On ne touche JAMAIS une saisie manuelle : on n'écrit que dans une case
+      // vide ou contenant l'ancienne pollution « Descrição… ».
+      if (cur === '' || isPollution) {
+        if (nv && nv !== cur) { forWho[i][0] = nv; updated++; }
+        else if (!nv && isPollution) { forWho[i][0] = ''; updated++; }
       }
     }
   }
