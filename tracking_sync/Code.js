@@ -198,9 +198,9 @@ function onOpen() {
     .addToUi();
 }
 
-// Maintenance one-shot (lançable depuis l'éditeur) : recorrige la colonne
-// « For who ? » des lignes TNT-PT existantes en relisant les emails
-// « foi marcado » avec le parseur du nom fiabilisé. Renvoie le nombre corrigé.
+// Maintenance one-shot (lançable depuis l'éditeur) : recorrige la colonne « For who ? » des lignes TNT-PT
+// existantes en relisant les emails « foi marcado » avec le parseur de
+// référence. Renvoie le nombre corrigé.
 function fixTntPtForWho() {
   var sheet = SpreadsheetApp.openById(SHEET_ID).getSheetByName(TAB_NAME);
 
@@ -211,7 +211,10 @@ function fixTntPtForWho() {
       var data = extractTntPt(message);
       if (data && data.tracking) {
         var t = String(data.tracking).trim();
-        if (data.forWho) byTracking[t] = data.forWho;
+        // Inclure aussi les trackings sans référence (valeur ''), pour pouvoir
+        // nettoyer la pollution « Descrição… » de ces lignes. Une valeur non
+        // vide l'emporte si le fil contient plusieurs messages.
+        if (!(t in byTracking) || data.forWho) byTracking[t] = data.forWho || '';
       }
     });
   });
@@ -228,8 +231,12 @@ function fixTntPtForWho() {
     var t = String(trackings[i][0]).trim();
     if (byTracking.hasOwnProperty(t)) {
       var nv = byTracking[t];
-      if (nv && nv !== String(forWho[i][0]).trim()) {
-        forWho[i][0] = nv;
+      var cur = String(forWho[i][0]).trim();
+      if (nv) {
+        if (nv !== cur) { forWho[i][0] = nv; updated++; }
+      } else if (/^Descri|do\s+envio|COSMETIC\s+BODY/i.test(cur)) {
+        // Email TNT-PT sans référence : on efface la pollution résiduelle.
+        forWho[i][0] = '';
         updated++;
       }
     }
@@ -336,17 +343,23 @@ function extractTntPt(message) {
                    || body.match(/CARTA\s+DE\s+PORTE\s*[:#-]?\s*(\d{6,})/i);
   var tracking = trackingMatch ? trackingMatch[1] : null;
 
-  // « For who ? » = le DESTINATAIRE (cohérent avec les lignes FedEx et avec le
-  // rapprochement Shopify par nom). Le corps TNT-PT le donne proprement en
-  // « Nome de contacto: <nom> » ; fallbacks « Entregue a: » puis « Para: ».
-  // (L'ancienne capture sur « Referência » attrapait « do envio: #NNNN » ou la
-  // ligne « Descrição », d'où les valeurs parasites.)
-  var forWhoMatch = body.match(/Nome de contacto\s*:?\s*([^\r\n]+)/i)
-                 || body.match(/Entregue a:\s*\r?\n\s*([^\r\n]+)/i)
-                 || body.match(/Para:\s*\r?\n\s*([^\r\n]+)/i);
-  var forWho = forWhoMatch ? forWhoMatch[1].trim() : '';
+  // « For who ? » = la RÉFÉRENCE de l'envoi (ex. « #2218 », « Sunstudio »),
+  // PAS le nom du destinataire. Elle figure en « Referência do envio: <valeur> ».
+  // Dans certains emails la valeur est vide dans le texte brut (présente
+  // uniquement dans le HTML) : on capture jusqu'à « Descrição »/fin de ligne,
+  // puis on se rabat sur le corps HTML (balises retirées) si besoin.
+  var forWho = refFromTntPt_(body);
+  if (!forWho) forWho = refFromTntPt_(String(message.getBody() || '').replace(/<[^>]+>/g, ' '));
 
   return tracking ? { tracking: tracking, forWho: forWho } : null;
+}
+
+function refFromTntPt_(text) {
+  // Gère « Referência do envio: » ET « Referência do cliente: » (et « Referência: »
+  // seul). Capture non gourmande, stoppée à « Descrição »/fin de ligne pour ne pas
+  // déborder quand la valeur est vide dans le texte brut.
+  var m = text.match(/Refer[êe]ncia(?:\s+do\s+(?:envio|cliente))?\s*:\s*(.*?)\s*(?:Descri|[\r\n]|$)/i);
+  return m ? m[1].trim() : '';
 }
 
 // ---- Maintenance : ne garder que l'année 2026 ----
