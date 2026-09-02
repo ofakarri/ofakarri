@@ -21,10 +21,16 @@ var COL_MONTH = 2;     // B - "Mois"
 
 var MONTHS_FR = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre'];
 
-// Le fichier ne doit contenir QUE 2026 : on borne la recherche Gmail à l'année
-// 2026. (Sinon les emails 2025 encore récents seraient ré-ajoutés après la purge,
-// puisque leur n° n'est plus dans le Sheet.) À ajuster au passage d'année.
-var SEARCH_WINDOW = 'after:2025/12/31 before:2027/01/01';
+// Fenêtre de la synchro courante : on ne relit que les emails RÉCENTS (les plus
+// anciens sont déjà dans le Sheet). Indispensable pour la vitesse — sans label
+// de suivi, chaque run relit tout ce que la fenêtre couvre. La synchro tourne
+// toutes les 15 min, donc 45 jours de marge suffisent largement. Borne basse
+// « after:2025/12/31 » pour ne jamais ré-ajouter du 2025 après la purge.
+var SEARCH_WINDOW = 'newer_than:45d after:2025/12/31';
+
+// Fenêtre large réservée aux corrections one-shot (fixTntPtForWho) qui doivent
+// balayer toute l'année.
+var FULL_WINDOW_2026 = 'after:2025/12/31 before:2027/01/01';
 
 var CARRIERS = [
   {
@@ -124,6 +130,12 @@ function reorganizeMonthGroups(sheet) {
   });
   sheet.getRange(DATA_START_ROW, COL_MONTH, numRows, 1).setValues(labels.map(function (v) { return [v]; }));
 
+  // Mois courant à laisser visible (recalculé à chaque exécution, donc suit
+  // automatiquement le changement de mois). On ré-affiche tout d'abord car le
+  // masquage de Sheets est par position et serait mélangé par le tri ci-dessus.
+  var currentLabel = getMonthLabel(new Date());
+  sheet.showRows(DATA_START_ROW, numRows);
+
   var colors = ['#eef3fc', '#ffffff'];
   var colorIndex = 0;
   var startIndex = 0;
@@ -139,6 +151,11 @@ function reorganizeMonthGroups(sheet) {
         .setHorizontalAlignment('center')
         .setFontWeight('bold')
         .setBackground(colors[colorIndex % 2]);
+      // Masquer les mois précédents : ne laisser visible que le mois courant
+      // (les lignes sans date restent visibles).
+      if (labels[startIndex] && labels[startIndex] !== currentLabel) {
+        sheet.hideRows(blockRow, blockLength);
+      }
       colorIndex++;
       startIndex = i;
     }
@@ -206,7 +223,7 @@ function fixTntPtForWho() {
 
   // 1) Construire une table n° de suivi -> destinataire à partir des emails TNT-PT.
   var byTracking = {};
-  searchAllThreads_(SEARCH_WINDOW + ' subject:("foi marcado")').forEach(function (thread) {
+  searchAllThreads_(FULL_WINDOW_2026 + ' subject:("foi marcado")').forEach(function (thread) {
     thread.getMessages().forEach(function (message) {
       var data = extractTntPt(message);
       if (data && data.tracking) {
@@ -244,6 +261,14 @@ function fixTntPtForWho() {
   sheet.getRange(DATA_START_ROW, COL_FOR_WHO, n, 1).setValues(forWho);
   Logger.log('Destinataires TNT-PT corrigés : %s', updated);
   return updated;
+}
+
+// Applique juste la réorganisation + le masquage des mois précédents, SANS
+// scanner Gmail (rapide, lançable depuis l'éditeur).
+function hideOtherMonthsNow() {
+  var sheet = SpreadsheetApp.openById(SHEET_ID).getSheetByName(TAB_NAME);
+  reorganizeMonthGroups(sheet);
+  applyVisualStyle(sheet);
 }
 
 function refreshNow() {
@@ -345,11 +370,10 @@ function extractTntPt(message) {
 
   // « For who ? » = la RÉFÉRENCE de l'envoi (ex. « #2218 », « Sunstudio »),
   // PAS le nom du destinataire. Elle figure en « Referência do envio: <valeur> ».
-  // Dans certains emails la valeur est vide dans le texte brut (présente
-  // uniquement dans le HTML) : on capture jusqu'à « Descrição »/fin de ligne,
-  // puis on se rabat sur le corps HTML (balises retirées) si besoin.
+  // Capture stoppée à « Descrição »/fin de ligne. Si l'email n'a pas de
+  // référence (champ vide), on laisse vide (le champ est vide aussi dans le
+  // HTML, donc pas de lecture HTML coûteuse — évite les dépassements de temps).
   var forWho = refFromTntPt_(body);
-  if (!forWho) forWho = refFromTntPt_(String(message.getBody() || '').replace(/<[^>]+>/g, ' '));
 
   return tracking ? { tracking: tracking, forWho: forWho } : null;
 }
