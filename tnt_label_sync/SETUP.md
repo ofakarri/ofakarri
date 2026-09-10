@@ -57,7 +57,7 @@ En haut du fichier, adapter les constantes à **ton** contrat (valeurs à
 confirmer dans le sandbox) :
 
 ```js
-var SERVICE_TYPE    = 'FEDEX_INTERNATIONAL_PRIORITY'; // ton service réel (à confirmer via myTNT « Selecionar modelo »)
+var SERVICE_TYPE    = 'FEDEX_REGIONAL_ECONOMY';       // TNT « Economy Express » (meilleur prix), validé sandbox
 var PACKAGING_TYPE  = 'YOUR_PACKAGING';               // ton emballage (myTNT « Caixa » = ton carton)
 var PICKUP_TYPE     = 'USE_SCHEDULED_PICKUP';         // ou DROPOFF_AT_FEDEX_LOCATION
 var WEIGHT_KG       = 0.5;                            // ton poids réel

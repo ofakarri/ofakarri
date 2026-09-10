@@ -35,7 +35,7 @@ var FULFILLMENT_CARRIER = 'FedEx'; // société transmise à Shopify (Shopify g�
 // ======================= COLIS STANDARD (fixe) =======================
 // Confirmés par l'utilisateur : service et poids toujours identiques.
 // ⚠️ Codes à valider dans le sandbox FedEx selon ton contrat.
-var SERVICE_TYPE = 'FEDEX_INTERNATIONAL_PRIORITY'; // TODO: confirmer le code exact du service TNT/FedEx utilisé
+var SERVICE_TYPE = 'FEDEX_REGIONAL_ECONOMY'; // TNT "Economy Express" (meilleur prix) -> Regional Economy intra-UE
 var PACKAGING_TYPE = 'YOUR_PACKAGING';             // ex. 'YOUR_PACKAGING' (ton propre emballage)
 var PICKUP_TYPE = 'USE_SCHEDULED_PICKUP';          // ou 'DROPOFF_AT_FEDEX_LOCATION' selon ton fonctionnement
 var WEIGHT_KG = 0.5;                               // poids standard confirmé (0,5 kg)
