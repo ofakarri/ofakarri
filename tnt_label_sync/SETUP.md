@@ -114,10 +114,14 @@ dans l'admin Shopify que les bonnes commandes passent *Fulfilled* avec le bon
 n°), puis `NOTIFY_CUSTOMER = true`. En cas d'échec, le log affiche
 `⚠️ BOUCLE SHOPIFY : ...` sans bloquer (l'étiquette est déjà émise).
 
-⚠️ **Domaine Shopify** : ce module cible `ofa-karri-osmp.myshopify.com`
-(client_credentials), alors que `shopify_fulfillment_sync` cible
-`ofakarri.myshopify.com` (token `shpat_`). Vérifier que la boucle fermée pointe
-bien sur la boutique où vivent les commandes avant d'activer `CLOSE_LOOP`.
+✅ **Domaine Shopify confirmé** : ce module cible `ofa-karri-osmp.myshopify.com`,
+qui est bien le `myshopifyDomain` réel de la boutique OFA KARRI (domaine public
+`www.ofakarri.com`) — vérifié via l'Admin API le 2026-09-10 (commande #2243
+présente). La boucle fermée pointe donc sur la bonne boutique.
+
+ℹ️ À part : `shopify_fulfillment_sync` utilise `ofakarri.myshopify.com` dans sa
+copie locale, qui ne correspond PAS au `myshopifyDomain` réel — à vérifier
+séparément (possible drift prod ↔ dépôt), sans rapport avec ce module.
 
 ## Anti-doublon (implémenté)
 
