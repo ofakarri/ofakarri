@@ -57,12 +57,19 @@ En haut du fichier, adapter les constantes à **ton** contrat (valeurs à
 confirmer dans le sandbox) :
 
 ```js
-var SERVICE_TYPE    = 'FEDEX_INTERNATIONAL_PRIORITY'; // ton service réel
-var PACKAGING_TYPE  = 'YOUR_PACKAGING';               // ton emballage
+var SERVICE_TYPE    = 'FEDEX_INTERNATIONAL_PRIORITY'; // ton service réel (à confirmer via myTNT « Selecionar modelo »)
+var PACKAGING_TYPE  = 'YOUR_PACKAGING';               // ton emballage (myTNT « Caixa » = ton carton)
 var PICKUP_TYPE     = 'USE_SCHEDULED_PICKUP';         // ou DROPOFF_AT_FEDEX_LOCATION
 var WEIGHT_KG       = 0.5;                            // ton poids réel
-var LABEL_STOCK_TYPE = 'PAPER_85X11_TOP_HALF_LABEL';  // format d'impression
+var BOX_LENGTH_CM   = 20;                             // carton standard L × l × H (obligatoire chez myTNT)
+var BOX_WIDTH_CM    = 15;
+var BOX_HEIGHT_CM   = 10;
+var LABEL_STOCK_TYPE = 'PAPER_85X11_TOP_HALF_LABEL';  // format d'impression (STOCK_4X6 si imprimante thermique)
 ```
+
+Le **n° de commande Shopify** (`order.name`) est envoyé comme référence client
+FedEx (`customerReferences` → `CUSTOMER_REFERENCE`), équivalent du champ
+« Referência do cliente » de myTNT.
 
 Vérifier aussi l'expéditeur `SHIPPER` (numéro de téléphone à compléter).
 

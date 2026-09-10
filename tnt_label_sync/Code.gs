@@ -39,6 +39,9 @@ var SERVICE_TYPE = 'FEDEX_INTERNATIONAL_PRIORITY'; // TODO: confirmer le code ex
 var PACKAGING_TYPE = 'YOUR_PACKAGING';             // ex. 'YOUR_PACKAGING' (ton propre emballage)
 var PICKUP_TYPE = 'USE_SCHEDULED_PICKUP';          // ou 'DROPOFF_AT_FEDEX_LOCATION' selon ton fonctionnement
 var WEIGHT_KG = 0.5;                               // poids standard confirmé (0,5 kg)
+var BOX_LENGTH_CM = 20;                            // dimensions carton standard (L × l × H, en cm)
+var BOX_WIDTH_CM  = 15;
+var BOX_HEIGHT_CM = 10;
 var LABEL_IMAGE_TYPE = 'PDF';
 var LABEL_STOCK_TYPE = 'PAPER_85X11_TOP_HALF_LABEL'; // TODO: adapter au format d'impression
 
@@ -294,7 +297,14 @@ function buildShipRequest_(order) {
         labelStockType: LABEL_STOCK_TYPE
       },
       requestedPackageLineItems: [
-        { weight: { units: 'KG', value: WEIGHT_KG } }
+        {
+          weight: { units: 'KG', value: WEIGHT_KG },
+          dimensions: { length: BOX_LENGTH_CM, width: BOX_WIDTH_CM, height: BOX_HEIGHT_CM, units: 'CM' },
+          // Référence client = n° de commande Shopify (comme le champ myTNT « Referência do cliente »).
+          customerReferences: [
+            { customerReferenceType: 'CUSTOMER_REFERENCE', value: order.name }
+          ]
+        }
       ]
     }
   };
